@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Optional
 
 from sqlalchemy import Boolean, Date, DateTime, Integer, String, Text, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -44,7 +45,7 @@ class Streak(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     current_streak: Mapped[int] = mapped_column(Integer, default=0)
     max_streak: Mapped[int] = mapped_column(Integer, default=0)
-    last_publish_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    last_publish_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
 
 
 engine = create_engine(DATABASE_URL, echo=False)
