@@ -1,5 +1,6 @@
 """BlogBot — Telegram bot for managing @belevtsow content plan."""
 
+import asyncio
 import logging
 from datetime import time
 
@@ -93,4 +94,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Python 3.14 removed the implicit event loop — create one explicitly.
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
     main()
