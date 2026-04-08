@@ -47,6 +47,20 @@ def _get_client() -> gspread.Client:
         return gspread.service_account(filename=GOOGLE_CREDENTIALS_PATH)
 
 
+def _open_worksheet():
+    """Open worksheet with one retry on failure."""
+    for attempt in range(2):
+        try:
+            client = _get_client()
+            spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
+            return spreadsheet.worksheet(GOOGLE_SHEET_WORKSHEET)
+        except Exception as e:
+            if attempt == 0:
+                logger.warning("Sheet open failed, retrying: %s", e)
+                continue
+            raise
+
+
 def sync_from_google_sheets() -> int:
     """Fetch rows from Google Sheets and upsert into the database.
 
@@ -55,9 +69,7 @@ def sync_from_google_sheets() -> int:
 
     Returns the number of new rows added.
     """
-    client = _get_client()
-    spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
-    worksheet = spreadsheet.worksheet(GOOGLE_SHEET_WORKSHEET)
+    worksheet = _open_worksheet()
 
     rows = worksheet.get_all_values()
     if not rows:
@@ -108,9 +120,7 @@ def sync_from_google_sheets() -> int:
 
 def update_post_in_sheet(post_date: date, topic: str, published: bool) -> None:
     """Update the checkbox in column E for the matching row in Google Sheets."""
-    client = _get_client()
-    spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
-    worksheet = spreadsheet.worksheet(GOOGLE_SHEET_WORKSHEET)
+    worksheet = _open_worksheet()
 
     rows = worksheet.get_all_values()
     for i, row in enumerate(rows[1:], start=2):  # 1-indexed, skip header
