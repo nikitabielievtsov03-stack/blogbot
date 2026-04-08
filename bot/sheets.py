@@ -6,6 +6,8 @@ import logging
 import os
 
 import gspread
+from google.oauth2.service_account import Credentials
+from google.auth.transport.requests import Request
 
 from bot.config import GOOGLE_CREDENTIALS_PATH, GOOGLE_SHEET_ID, GOOGLE_SHEET_WORKSHEET
 from bot.models import Post, get_session
@@ -39,12 +41,16 @@ def _get_client() -> gspread.Client:
 
     if credentials_b64:
         info = json.loads(base64.b64decode(credentials_b64).decode())
-        return gspread.service_account_from_dict(info)
+        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     elif credentials_json:
         info = json.loads(credentials_json)
-        return gspread.service_account_from_dict(info)
+        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     else:
-        return gspread.service_account(filename=GOOGLE_CREDENTIALS_PATH)
+        creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_PATH, scopes=SCOPES)
+
+    # Force token refresh to avoid intermittent 401/404 from stale tokens
+    creds.refresh(Request())
+    return gspread.Client(auth=creds)
 
 
 def _open_worksheet():
