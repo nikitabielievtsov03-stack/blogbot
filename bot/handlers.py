@@ -3,18 +3,37 @@
 from datetime import date, datetime, timedelta
 import logging
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from bot.config import GOOGLE_SHEET_ID, TIMEZONE, USER_ID
 from bot.models import Idea, Post, Streak, get_session
-from bot.sheets import import_from_text, sync_from_google_sheets
+from bot.sheets import import_from_text, sync_from_google_sheets, update_post_in_sheet
 
 import pytz
 
 logger = logging.getLogger(__name__)
 
 TZ = pytz.timezone(TIMEZONE)
+
+# ── Button labels ─────────────────────────────────────────────────────────────
+
+BTN_TODAY  = "📅 Сегодня"
+BTN_WEEK   = "📆 Неделя"
+BTN_DONE   = "✅ Готово"
+BTN_UNDO   = "↩️ Отменить"
+BTN_STATS  = "📊 Статистика"
+BTN_IDEAS  = "💡 Идеи"
+BTN_STREAK = "🔥 Серия"
+BTN_SYNC   = "🔄 Синхронизировать"
+
+BUTTON_TEXTS = {BTN_TODAY, BTN_WEEK, BTN_DONE, BTN_UNDO, BTN_STATS, BTN_IDEAS, BTN_STREAK, BTN_SYNC}
+
+MONTHS_RU = {
+    1: "янв", 2: "фев", 3: "мар", 4: "апр",
+    5: "май", 6: "июн", 7: "июл", 8: "авг",
+    9: "сен", 10: "окт", 11: "ноя", 12: "дек",
+}
 
 
 def _today() -> date:
@@ -25,53 +44,35 @@ def _is_authorized(update: Update) -> bool:
     return update.effective_user and update.effective_user.id == USER_ID
 
 
-# ── /start ───────────────────────────────────────────────────────────────────
+def _fmt_date(d: date) -> str:
+    return f"{d.day} {MONTHS_RU[d.month]}"
 
-async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_authorized(update):
-        return
-    await update.message.reply_text(
-        "Привет, Никита! 👋\n\n"
-        "Я — твой бот для управления контент-планом @belevtsow.\n\n"
-        "Основные команды:\n"
-        "/plan — посты на сегодня и завтра\n"
-        "/week — план на текущую неделю\n"
-        "/done — отметить сегодняшний пост как опубликованный\n"
-        "/streak — текущая серия публикаций\n"
-        "/ideas — список сохранённых идей\n"
-        "/stats — статистика за неделю\n"
-        "/sync — синхронизировать план из Google Sheets\n"
-        "/import — загрузить план текстом\n"
-        "/help — справка по командам"
+
+def _progress_bar(done: int, total: int, length: int = 8) -> str:
+    if total == 0:
+        return "░" * length
+    filled = round(done / total * length)
+    return "▓" * filled + "░" * (length - filled)
+
+
+# ── Persistent reply keyboard ─────────────────────────────────────────────────
+
+def _keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [BTN_TODAY,  BTN_WEEK],
+            [BTN_DONE,   BTN_UNDO],
+            [BTN_STATS,  BTN_IDEAS],
+            [BTN_STREAK, BTN_SYNC],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
     )
 
 
-# ── /help ────────────────────────────────────────────────────────────────────
+# ── Logic builders ────────────────────────────────────────────────────────────
 
-async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_authorized(update):
-        return
-    await update.message.reply_text(
-        "📋 *Команды бота*\n\n"
-        "/plan — что нужно выложить сегодня и завтра\n"
-        "/week — план на текущую неделю\n"
-        "/done — отметить сегодняшний пост опубликованным\n"
-        "/streak — серия публикаций подряд\n"
-        "/ideas — все сохранённые идеи\n"
-        "/stats — статистика за последнюю неделю\n"
-        "/sync — обновить план из Google Sheets\n"
-        "/import — загрузить план текстом (каждая строка:\n"
-        "  `дата | день недели | формат | тема`)\n\n"
-        "💡 Просто напиши любое сообщение — оно сохранится как идея для будущего поста.",
-        parse_mode="Markdown",
-    )
-
-
-# ── /plan — today & tomorrow ────────────────────────────────────────────────
-
-async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_authorized(update):
-        return
+def _build_plan() -> str:
     today = _today()
     tomorrow = today + timedelta(days=1)
 
@@ -82,27 +83,36 @@ async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             .order_by(Post.date)
             .all()
         )
+        rows = [(p.date, p.day_of_week, p.format, p.topic, p.status) for p in posts]
 
-    if not posts:
-        await update.message.reply_text("На сегодня и завтра постов в плане нет.")
-        return
+    if not rows:
+        return (
+            "На сегодня и завтра постов нет.\n\n"
+            "Нажми 🔄 Синхронизировать, чтобы загрузить план."
+        )
 
-    lines: list[str] = []
-    for p in posts:
-        day_label = "Сегодня" if p.date == today else "Завтра"
-        status_icon = "✅" if p.status == "published" else "⏳"
-        lines.append(f"{status_icon} *{day_label}* ({p.day_of_week}): {p.format} — {p.topic}")
+    sections: list[str] = []
+    current_date = None
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    for p_date, p_dow, p_fmt, p_topic, p_status in rows:
+        if p_date != current_date:
+            if sections:
+                sections.append("━━━━━━━━━━━━━━")
+            if p_date == today:
+                sections.append(f"📋 *СЕГОДНЯ · {p_dow} {_fmt_date(today)}*")
+            else:
+                sections.append(f"📆 *ЗАВТРА · {p_dow} {_fmt_date(tomorrow)}*")
+            current_date = p_date
+
+        icon = "✅" if p_status == "published" else "⏳"
+        sections.append(f"{icon} *{p_fmt}*")
+        sections.append(f"↳ {p_topic}")
+
+    return "\n".join(sections)
 
 
-# ── /week ────────────────────────────────────────────────────────────────────
-
-async def cmd_week(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_authorized(update):
-        return
+def _build_week() -> str:
     today = _today()
-    # Monday of the current week.
     monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
 
@@ -113,94 +123,44 @@ async def cmd_week(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             .order_by(Post.date)
             .all()
         )
+        rows = [(p.date, p.day_of_week, p.format, p.topic, p.status) for p in posts]
 
-    if not posts:
-        await update.message.reply_text("На эту неделю контент-план пуст.")
-        return
+    if not rows:
+        return (
+            "На эту неделю контент-план пуст.\n\n"
+            "Нажми 🔄 Синхронизировать, чтобы загрузить план."
+        )
 
-    lines = [f"📅 *План на неделю* ({monday.strftime('%d.%m')} – {sunday.strftime('%d.%m')})\n"]
-    for p in posts:
-        icon = "✅" if p.status == "published" else ("📌" if p.date == today else "⬜")
-        lines.append(f"{icon} {p.date.strftime('%d.%m')} {p.day_of_week}: {p.format} — {p.topic}")
-
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-
-# ── /done — mark today's post as published ───────────────────────────────────
-
-async def cmd_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_authorized(update):
-        return
-    today = _today()
-
-    with get_session() as session:
-        posts = session.query(Post).filter(Post.date == today, Post.status != "published").all()
-        if not posts:
-            await update.message.reply_text("Все сегодняшние посты уже опубликованы (или их нет в плане).")
-            return
-
-        for p in posts:
-            p.status = "published"
-
-        # Update streak
-        streak = session.query(Streak).first()
-        if streak.last_publish_date == today:
-            pass  # already counted today
-        elif streak.last_publish_date == today - timedelta(days=1):
-            streak.current_streak += 1
-            streak.max_streak = max(streak.max_streak, streak.current_streak)
+    lines = [f"📆 *{_fmt_date(monday)} – {_fmt_date(sunday)}*\n"]
+    for p_date, p_dow, p_fmt, p_topic, p_status in rows:
+        if p_status == "published":
+            icon = "✅"
+        elif p_date == today:
+            icon = "📌"
         else:
-            streak.current_streak = 1
+            icon = "⬜"
+        mark = "  ← сегодня" if p_date == today else ""
+        lines.append(f"{icon} *{p_dow} {p_date.strftime('%d.%m')}*  {p_fmt} — {p_topic}{mark}")
 
-        streak.last_publish_date = today
-        session.commit()
-
-        topics = ", ".join(p.topic for p in posts)
-        await update.message.reply_text(
-            f"✅ Отмечено как опубликовано: {topics}\n"
-            f"🔥 Серия: {streak.current_streak} дней подряд!"
-        )
+    return "\n".join(lines)
 
 
-# ── /streak ──────────────────────────────────────────────────────────────────
-
-async def cmd_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_authorized(update):
-        return
+def _build_streak() -> str:
     with get_session() as session:
         streak = session.query(Streak).first()
-        await update.message.reply_text(
-            f"🔥 Текущая серия: *{streak.current_streak}* дней подряд\n"
-            f"🏆 Рекорд: *{streak.max_streak}* дней",
-            parse_mode="Markdown",
-        )
+        current = streak.current_streak
+        best = streak.max_streak
+
+    bar = _progress_bar(current, max(best, 1))
+    return (
+        f"🔥 *Серия публикаций*\n\n"
+        f"Сейчас:  *{current}* дн. подряд\n"
+        f"Рекорд:  *{best}* дн.\n\n"
+        f"{bar}  {current}/{best}"
+    )
 
 
-# ── /ideas — list saved ideas ───────────────────────────────────────────────
-
-async def cmd_ideas(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_authorized(update):
-        return
-    with get_session() as session:
-        ideas = session.query(Idea).order_by(Idea.created_at.desc()).limit(30).all()
-
-    if not ideas:
-        await update.message.reply_text("Список идей пуст. Просто напиши мне идею — я сохраню.")
-        return
-
-    lines = ["💡 *Идеи для постов:*\n"]
-    for i, idea in enumerate(ideas, 1):
-        dt = idea.created_at.strftime("%d.%m")
-        lines.append(f"{i}. {idea.text}  _{dt}_")
-
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-
-# ── /stats — weekly statistics ───────────────────────────────────────────────
-
-async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_authorized(update):
-        return
+def _build_stats() -> str:
     today = _today()
     monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
@@ -215,19 +175,191 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             Post.status == "published",
         ).count()
         streak = session.query(Streak).first()
+        current_streak = streak.current_streak
 
-    pct = (published / total * 100) if total > 0 else 0
-    await update.message.reply_text(
-        f"📊 *Статистика недели* ({monday.strftime('%d.%m')} – {sunday.strftime('%d.%m')})\n\n"
-        f"Запланировано: {total}\n"
-        f"Опубликовано: {published}\n"
-        f"Выполнение: {pct:.0f}%\n"
-        f"🔥 Серия: {streak.current_streak} дней",
-        parse_mode="Markdown",
+    pct = int(published / total * 100) if total > 0 else 0
+    bar = _progress_bar(published, total)
+    return (
+        f"📊 *{_fmt_date(monday)} – {_fmt_date(sunday)}*\n\n"
+        f"Запланировано   *{total}*\n"
+        f"Опубликовано    *{published}*\n\n"
+        f"{bar}  *{pct}%*\n\n"
+        f"🔥 Серия: *{current_streak}* дней подряд"
     )
 
 
-# ── /sync — pull from Google Sheets ─────────────────────────────────────────
+def _build_ideas() -> str:
+    with get_session() as session:
+        ideas = session.query(Idea).order_by(Idea.created_at.desc()).limit(20).all()
+        rows = [(idea.text, idea.created_at) for idea in ideas]
+
+    if not rows:
+        return (
+            "💡 *Идей пока нет*\n\n"
+            "Просто напиши мне любую мысль — сохраню как идею для поста."
+        )
+
+    lines = ["💡 *Идеи для постов*\n"]
+    for i, (text, created_at) in enumerate(rows, 1):
+        dt = _fmt_date(created_at.date())
+        lines.append(f"*{i}.* {text}  _{dt}_")
+
+    return "\n".join(lines)
+
+
+def _do_done() -> str:
+    today = _today()
+    with get_session() as session:
+        posts = session.query(Post).filter(Post.date == today, Post.status != "published").all()
+        if not posts:
+            return (
+                "Все сегодняшние посты уже отмечены ✅\n\n"
+                "Чтобы снять отметку — нажми ↩️ Отменить."
+            )
+
+        topics_list = [p.topic for p in posts]
+        for p in posts:
+            p.status = "published"
+
+        streak = session.query(Streak).first()
+        if streak.last_publish_date == today:
+            pass
+        elif streak.last_publish_date == today - timedelta(days=1):
+            streak.current_streak += 1
+            streak.max_streak = max(streak.max_streak, streak.current_streak)
+        else:
+            streak.current_streak = 1
+
+        streak.last_publish_date = today
+        session.commit()
+        current_streak = streak.current_streak
+
+    # Sync to Google Sheets
+    for topic in topics_list:
+        try:
+            update_post_in_sheet(today, topic, True)
+        except Exception as e:
+            logger.warning("Sheet update failed: %s", e)
+
+    topics = "\n".join(f"· {t}" for t in topics_list)
+    return (
+        f"✅ *Опубликовано сегодня:*\n{topics}\n\n"
+        f"🔥 Серия: *{current_streak}* дней подряд!"
+    )
+
+
+def _undo_done() -> str:
+    today = _today()
+    with get_session() as session:
+        posts = session.query(Post).filter(Post.date == today, Post.status == "published").all()
+        if not posts:
+            return "Нет отмеченных постов на сегодня — нечего отменять."
+
+        topics_list = [p.topic for p in posts]
+        for p in posts:
+            p.status = "planned"
+
+        streak = session.query(Streak).first()
+        if streak.last_publish_date == today:
+            streak.current_streak = max(0, streak.current_streak - 1)
+            streak.last_publish_date = today - timedelta(days=1) if streak.current_streak > 0 else None
+
+        session.commit()
+
+    # Sync to Google Sheets
+    for topic in topics_list:
+        try:
+            update_post_in_sheet(today, topic, False)
+        except Exception as e:
+            logger.warning("Sheet update failed: %s", e)
+
+    topics = "\n".join(f"· {t}" for t in topics_list)
+    return f"↩️ *Статус сброшен:*\n{topics}\n\nПосты снова в плане."
+
+
+# ── /start ────────────────────────────────────────────────────────────────────
+
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+    await update.message.reply_text(
+        "Никита, привет 👋\n\n"
+        "*@belevtsow · контент-план*\n\n"
+        "Панель управления — внизу ↓",
+        parse_mode="Markdown",
+        reply_markup=_keyboard(),
+    )
+
+
+# ── /help ─────────────────────────────────────────────────────────────────────
+
+async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+    await update.message.reply_text(
+        "📋 *Как пользоваться ботом*\n\n"
+        "📅 *Сегодня* — посты на сегодня и завтра\n"
+        "📆 *Неделя* — весь план на текущую неделю\n"
+        "✅ *Готово* — отметить сегодня как опубликовано\n"
+        "📊 *Статистика* — прогресс недели\n"
+        "💡 *Идеи* — сохранённые идеи\n"
+        "🔥 *Серия* — streak публикаций\n"
+        "🔄 *Синхронизировать* — обновить из Google Таблицы\n\n"
+        "💬 Любое сообщение сохранится как идея для поста.",
+        parse_mode="Markdown",
+        reply_markup=_keyboard(),
+    )
+
+
+# ── /plan ─────────────────────────────────────────────────────────────────────
+
+async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+    await update.message.reply_text(_build_plan(), parse_mode="Markdown", reply_markup=_keyboard())
+
+
+# ── /week ─────────────────────────────────────────────────────────────────────
+
+async def cmd_week(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+    await update.message.reply_text(_build_week(), parse_mode="Markdown", reply_markup=_keyboard())
+
+
+# ── /done ─────────────────────────────────────────────────────────────────────
+
+async def cmd_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+    await update.message.reply_text(_do_done(), parse_mode="Markdown", reply_markup=_keyboard())
+
+
+# ── /streak ───────────────────────────────────────────────────────────────────
+
+async def cmd_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+    await update.message.reply_text(_build_streak(), parse_mode="Markdown", reply_markup=_keyboard())
+
+
+# ── /ideas ────────────────────────────────────────────────────────────────────
+
+async def cmd_ideas(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+    await update.message.reply_text(_build_ideas(), parse_mode="Markdown", reply_markup=_keyboard())
+
+
+# ── /stats ────────────────────────────────────────────────────────────────────
+
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+    await update.message.reply_text(_build_stats(), parse_mode="Markdown", reply_markup=_keyboard())
+
+
+# ── /sync ─────────────────────────────────────────────────────────────────────
 
 async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update):
@@ -235,16 +367,19 @@ async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not GOOGLE_SHEET_ID:
         await update.message.reply_text("Google Sheet ID не настроен. Проверь .env файл.")
         return
-
     try:
         added = sync_from_google_sheets()
-        await update.message.reply_text(f"✅ Синхронизация завершена. Добавлено новых постов: {added}")
+        await update.message.reply_text(
+            f"🔄 *Синхронизация завершена*\n\nНовых постов добавлено: *{added}*",
+            parse_mode="Markdown",
+            reply_markup=_keyboard(),
+        )
     except Exception as e:
         logger.exception("Google Sheets sync failed")
         await update.message.reply_text(f"❌ Ошибка синхронизации: {e}")
 
 
-# ── /import — import plan from text ──────────────────────────────────────────
+# ── /import ───────────────────────────────────────────────────────────────────
 
 async def cmd_import(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update):
@@ -253,18 +388,27 @@ async def cmd_import(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not text:
         await update.message.reply_text(
             "Отправь контент-план в формате (каждая строка):\n"
-            "`дата | день недели | формат | тема`\n\n"
+            "`дата | день | формат | тема`\n\n"
             "Пример:\n"
-            "`07.04.2026 | Пн | Reels | История бренда 12STOREEZ`",
+            "`08.04.26 | ср | Reels | История бренда 12STOREEZ`",
             parse_mode="Markdown",
         )
         return
-
     added = import_from_text(text)
-    await update.message.reply_text(f"✅ Импортировано постов: {added}")
+    await update.message.reply_text(
+        f"✅ Импортировано постов: *{added}*",
+        parse_mode="Markdown",
+        reply_markup=_keyboard(),
+    )
 
 
-# ── Catch-all: save as idea ─────────────────────────────────────────────────
+# ── Callback stub (for any old inline buttons) ────────────────────────────────
+
+async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.callback_query.answer()
+
+
+# ── Catch-all text handler ────────────────────────────────────────────────────
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update):
@@ -273,14 +417,41 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not text:
         return
 
-    # Check for "готово" / "done" as status shortcut
-    if text.lower() in ("готово", "done", "опубликовано"):
-        await cmd_done(update, ctx)
-        return
-
-    # Otherwise save as idea
-    with get_session() as session:
-        session.add(Idea(text=text))
-        session.commit()
-
-    await update.message.reply_text(f"💡 Идея сохранена: «{text}»")
+    if text == BTN_TODAY:
+        await update.message.reply_text(_build_plan(), parse_mode="Markdown", reply_markup=_keyboard())
+    elif text == BTN_WEEK:
+        await update.message.reply_text(_build_week(), parse_mode="Markdown", reply_markup=_keyboard())
+    elif text == BTN_DONE or text.lower() in ("готово", "done", "опубликовано"):
+        await update.message.reply_text(_do_done(), parse_mode="Markdown", reply_markup=_keyboard())
+    elif text == BTN_UNDO:
+        await update.message.reply_text(_undo_done(), parse_mode="Markdown", reply_markup=_keyboard())
+    elif text == BTN_STATS:
+        await update.message.reply_text(_build_stats(), parse_mode="Markdown", reply_markup=_keyboard())
+    elif text == BTN_IDEAS:
+        await update.message.reply_text(_build_ideas(), parse_mode="Markdown", reply_markup=_keyboard())
+    elif text == BTN_STREAK:
+        await update.message.reply_text(_build_streak(), parse_mode="Markdown", reply_markup=_keyboard())
+    elif text == BTN_SYNC:
+        if not GOOGLE_SHEET_ID:
+            await update.message.reply_text("Google Sheet ID не настроен.")
+            return
+        try:
+            added = sync_from_google_sheets()
+            await update.message.reply_text(
+                f"🔄 *Синхронизация завершена*\n\nНовых постов добавлено: *{added}*",
+                parse_mode="Markdown",
+                reply_markup=_keyboard(),
+            )
+        except Exception as e:
+            logger.exception("Google Sheets sync failed")
+            await update.message.reply_text(f"❌ Ошибка синхронизации: {e}")
+    else:
+        # Save as idea
+        with get_session() as session:
+            session.add(Idea(text=text))
+            session.commit()
+        await update.message.reply_text(
+            f"💡 *Идея сохранена:*\n{text}",
+            parse_mode="Markdown",
+            reply_markup=_keyboard(),
+        )

@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import time
 
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 import pytz
 
@@ -20,6 +20,7 @@ from bot.handlers import (
     cmd_streak,
     cmd_sync,
     cmd_week,
+    handle_callback,
     handle_text,
 )
 from bot.models import init_db
@@ -56,6 +57,9 @@ def main() -> None:
     # ── Catch-all text handler (saves ideas / handles "готово") ──────────
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
+    # ── Inline button callbacks ───────────────────────────────────────────
+    app.add_handler(CallbackQueryHandler(handle_callback))
+
     # ── Scheduled jobs ───────────────────────────────────────────────────
     job_queue = app.job_queue
 
@@ -66,10 +70,10 @@ def main() -> None:
         name="day_before",
     )
 
-    # Day-of reminder — every day at 09:00 Moscow time
+    # Day-of reminder — every day at 08:00 Moscow time
     job_queue.run_daily(
         notify_day_of,
-        time=time(hour=9, minute=0, tzinfo=TZ),
+        time=time(hour=8, minute=0, tzinfo=TZ),
         name="day_of",
     )
 
