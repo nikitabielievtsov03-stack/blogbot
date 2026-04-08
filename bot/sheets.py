@@ -6,7 +6,6 @@ import logging
 import os
 
 import gspread
-from google.oauth2.service_account import Credentials
 
 from bot.config import GOOGLE_CREDENTIALS_PATH, GOOGLE_SHEET_ID, GOOGLE_SHEET_WORKSHEET
 from bot.models import Post, get_session
@@ -40,13 +39,12 @@ def _get_client() -> gspread.Client:
 
     if credentials_b64:
         info = json.loads(base64.b64decode(credentials_b64).decode())
-        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+        return gspread.service_account_from_dict(info)
     elif credentials_json:
         info = json.loads(credentials_json)
-        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+        return gspread.service_account_from_dict(info)
     else:
-        creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_PATH, scopes=SCOPES)
-    return gspread.Client(auth=creds)
+        return gspread.service_account(filename=GOOGLE_CREDENTIALS_PATH)
 
 
 def sync_from_google_sheets() -> int:
