@@ -376,8 +376,12 @@ async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
     except Exception as e:
         logger.exception("Google Sheets sync failed")
-        detail = getattr(getattr(e, "response", None), "text", None) or str(e)
-        await update.message.reply_text(f"❌ Ошибка синхронизации: {detail[:300]}")
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            detail = f"HTTP {resp.status_code}: {resp.text[:200]}"
+        else:
+            detail = f"{type(e).__name__}: {e}"
+        await update.message.reply_text(f"❌ Ошибка синхронизации:\n{detail}")
 
 
 # ── /import ───────────────────────────────────────────────────────────────────
