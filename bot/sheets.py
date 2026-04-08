@@ -34,8 +34,14 @@ def _parse_date(raw: str) -> datetime | None:
 
 
 def _get_client() -> gspread.Client:
+    import base64
+    credentials_b64 = os.getenv("GOOGLE_CREDENTIALS_B64")
     credentials_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
-    if credentials_json:
+
+    if credentials_b64:
+        info = json.loads(base64.b64decode(credentials_b64).decode())
+        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    elif credentials_json:
         info = json.loads(credentials_json)
         creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     else:
