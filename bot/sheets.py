@@ -134,10 +134,39 @@ def update_post_in_sheet(post_date: date, topic: str, published: bool) -> None:
             continue
         parsed_date = _parse_date(row[0])
         if parsed_date == post_date and row[3].strip() == topic.strip():
-            worksheet.update_cell(i, 5, published)
+            # Checkboxes in Google Sheets expect boolean TRUE/FALSE
+            worksheet.update([[True if published else False]], f"E{i}")
+            logger.info("Sheet updated: row %d → %s", i, published)
             return
 
     logger.warning("Row not found in sheet for date=%s topic=%s", post_date, topic)
+
+
+def get_ideas_from_sheet() -> list:
+    """Return ideas from Google Sheet rows 34+ (column D, non-empty)."""
+    worksheet = _open_worksheet()
+    all_values = worksheet.get_all_values()
+    ideas = []
+    for row in all_values[33:]:  # 0-indexed → sheet row 34+
+        if len(row) >= 4 and row[3].strip():
+            ideas.append(row[3].strip())
+    return ideas
+
+
+def add_idea_to_sheet(text: str) -> None:
+    """Append a new idea to the ideas section (rows 34+) in Google Sheet column D."""
+    worksheet = _open_worksheet()
+    all_values = worksheet.get_all_values()
+
+    # Find the last occupied row in column D starting from row 34
+    last_idea_row = 33  # 1-indexed row 33 = just before row 34
+    for i, row in enumerate(all_values[33:], start=34):
+        if len(row) >= 4 and row[3].strip():
+            last_idea_row = i
+
+    next_row = last_idea_row + 1
+    worksheet.update_cell(next_row, 4, text)
+    logger.info("Idea added to sheet row %d: %s", next_row, text)
 
 
 def import_from_text(text: str) -> int:
