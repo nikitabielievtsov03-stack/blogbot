@@ -4,6 +4,7 @@ from datetime import date, datetime
 import json
 import logging
 import os
+import time
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -54,17 +55,19 @@ def _get_client() -> gspread.Client:
 
 
 def _open_worksheet():
-    """Open worksheet with one retry on failure."""
-    for attempt in range(2):
+    """Open worksheet with up to 3 retries on failure."""
+    last_exc = None
+    for attempt in range(3):
         try:
             client = _get_client()
             spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
             return spreadsheet.worksheet(GOOGLE_SHEET_WORKSHEET)
         except Exception as e:
-            if attempt == 0:
-                logger.warning("Sheet open failed, retrying: %s", e)
-                continue
-            raise
+            last_exc = e
+            logger.warning("Sheet open failed (attempt %d/3): %s", attempt + 1, e)
+            if attempt < 2:
+                time.sleep(2 ** attempt)  # 1s, 2s
+    raise last_exc
 
 
 def sync_from_google_sheets() -> int:
