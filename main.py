@@ -15,6 +15,7 @@ from bot.handlers import (
     cmd_ideas,
     cmd_import,
     cmd_plan,
+    cmd_pptx,
     cmd_start,
     cmd_stats,
     cmd_streak,
@@ -53,6 +54,7 @@ def main() -> None:
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("sync", cmd_sync))
     app.add_handler(CommandHandler("import", cmd_import))
+    app.add_handler(CommandHandler("pptx", cmd_pptx))
 
     # ── Catch-all text handler (saves ideas / handles "готово") ──────────
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

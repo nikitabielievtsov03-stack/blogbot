@@ -15,6 +15,7 @@ from bot.sheets import (
     sync_from_google_sheets,
     update_post_in_sheet,
 )
+from bot.pptx_generator import generate_pptx
 
 import pytz
 
@@ -32,8 +33,9 @@ BTN_STATS  = "📊 Статистика"
 BTN_IDEAS  = "💡 Идеи"
 BTN_STREAK = "🔥 Серия"
 BTN_SYNC   = "🔄 Синхронизировать"
+BTN_PPTX   = "🎨 Презентация"
 
-BUTTON_TEXTS = {BTN_TODAY, BTN_WEEK, BTN_DONE, BTN_UNDO, BTN_STATS, BTN_IDEAS, BTN_STREAK, BTN_SYNC}
+BUTTON_TEXTS = {BTN_TODAY, BTN_WEEK, BTN_DONE, BTN_UNDO, BTN_STATS, BTN_IDEAS, BTN_STREAK, BTN_SYNC, BTN_PPTX}
 
 MONTHS_RU = {
     1: "янв", 2: "фев", 3: "мар", 4: "апр",
@@ -81,6 +83,7 @@ def _keyboard() -> ReplyKeyboardMarkup:
             [BTN_DONE,   BTN_UNDO],
             [BTN_STATS,  BTN_STREAK],
             [BTN_IDEAS,  BTN_SYNC],
+            [BTN_PPTX],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -357,6 +360,28 @@ def _undo_done() -> str:
     return f"↩️ *Отменено:*\n{topics}\n\nПосты снова в плане."
 
 
+# ── PPTX ──────────────────────────────────────────────────────────────────────
+
+# Храним chat_id тех, кто ждёт ввода сценария
+_pptx_waiting: set[int] = set()
+
+
+async def _send_pptx(update: Update, scenario: str) -> None:
+    chat_id = update.effective_chat.id
+    await update.message.reply_text("⏳ Генерирую презентацию...")
+    try:
+        pptx_bytes = generate_pptx(scenario)
+        await update.message.reply_document(
+            document=pptx_bytes,
+            filename="presentation.pptx",
+            caption="🎨 Готово! Открой в PowerPoint или Google Slides.",
+            reply_markup=_keyboard(),
+        )
+    except Exception as e:
+        logger.exception("PPTX generation failed")
+        await update.message.reply_text(f"❌ Ошибка генерации: {e}", reply_markup=_keyboard())
+
+
 # ── /start ────────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -462,6 +487,34 @@ async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"❌ Ошибка синхронизации:\n{detail}")
 
 
+# ── /pptx ─────────────────────────────────────────────────────────────────────
+
+async def cmd_pptx(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+    scenario = update.message.text.replace("/pptx", "", 1).strip()
+    if scenario:
+        await _send_pptx(update, scenario)
+    else:
+        _pptx_waiting.add(update.effective_chat.id)
+        await update.message.reply_text(
+            "🎨 *Отправь сценарий презентации*\n\n"
+            "Формат:\n"
+            "```\n"
+            "Заголовок презентации\n"
+            "---\n"
+            "Слайд 1\n"
+            "- Пункт 1\n"
+            "- Пункт 2\n"
+            "---\n"
+            "Слайд 2\n"
+            "- Пункт 1\n"
+            "```\n\n"
+            "_Разделяй слайды через_ `---`",
+            parse_mode="Markdown",
+        )
+
+
 # ── /import ───────────────────────────────────────────────────────────────────
 
 async def cmd_import(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -500,6 +553,13 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not text:
         return
 
+    # Если ждём сценарий для PPTX
+    chat_id = update.effective_chat.id
+    if chat_id in _pptx_waiting and text not in BUTTON_TEXTS:
+        _pptx_waiting.discard(chat_id)
+        await _send_pptx(update, text)
+        return
+
     if text == BTN_TODAY:
         await update.message.reply_text(_build_plan(), parse_mode="Markdown", reply_markup=_keyboard())
     elif text == BTN_WEEK:
@@ -514,6 +574,20 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(_build_ideas(), parse_mode="Markdown", reply_markup=_keyboard())
     elif text == BTN_STREAK:
         await update.message.reply_text(_build_streak(), parse_mode="Markdown", reply_markup=_keyboard())
+    elif text == BTN_PPTX:
+        _pptx_waiting.add(update.effective_chat.id)
+        await update.message.reply_text(
+            "🎨 *Отправь сценарий презентации*\n\n"
+            "Формат — каждый слайд через `---`:\n\n"
+            "`Заголовок презентации`\n"
+            "`---`\n"
+            "`Слайд 1`\n"
+            "`- Пункт`\n"
+            "`---`\n"
+            "`Слайд 2`\n"
+            "`- Пункт`",
+            parse_mode="Markdown",
+        )
     elif text == BTN_SYNC:
         if not GOOGLE_SHEET_ID:
             await update.message.reply_text("Google Sheet ID не настроен.")
