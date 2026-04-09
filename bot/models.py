@@ -34,6 +34,31 @@ class Idea(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class SentNews(Base):
+    """News articles already sent to the user (deduplication)."""
+
+    __tablename__ = "sent_news"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    url = Column(String, unique=True, nullable=False)
+    title = Column(Text)
+    sent_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SavedIdea(Base):
+    """News-based content ideas saved by the user."""
+
+    __tablename__ = "saved_ideas"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(Text)
+    summary = Column(Text)
+    idea = Column(Text)
+    source_url = Column(String)
+    virality = Column(Integer, default=0)
+    saved_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Streak(Base):
     """Tracks the publishing streak."""
 

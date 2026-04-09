@@ -9,6 +9,7 @@ import pytz
 
 from bot.config import PRIME_TIME_HOUR, TIMEZONE, USER_ID
 from bot.models import Post, Streak, get_session
+from bot.news import run_digest
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,42 @@ async def notify_prime_time(ctx: ContextTypes.DEFAULT_TYPE) -> None:
         session.commit()
 
     await ctx.bot.send_message(chat_id=USER_ID, text="\n".join(lines), parse_mode="Markdown")
+
+
+# ── Daily news digest (runs every day at 09:00) ─────────────────────────────
+
+async def news_digest(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Fetch RSS news, analyse with Claude, send digest."""
+    try:
+        digest = run_digest()
+        if not digest:
+            await ctx.bot.send_message(
+                chat_id=USER_ID,
+                text="📭 Новостей за последние 24 часа нет — проверю завтра!",
+            )
+            return
+        # Split if > 4000 chars
+        limit = 4000
+        text = digest
+        while text:
+            chunk, text = text[:limit], text[limit:]
+            await ctx.bot.send_message(
+                chat_id=USER_ID,
+                text=chunk,
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+            )
+        await ctx.bot.send_message(
+            chat_id=USER_ID,
+            text="👆 Сохрани идею командой `/save_news N`",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.error("news_digest job failed: %s", e)
+        await ctx.bot.send_message(
+            chat_id=USER_ID,
+            text=f"❌ Ошибка новостного дайджеста: {e}",
+        )
 
 
 # ── Weekly digest (runs every Sunday at 10:00) ──────────────────────────────

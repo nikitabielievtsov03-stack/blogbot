@@ -14,8 +14,12 @@ from bot.handlers import (
     cmd_help,
     cmd_ideas,
     cmd_import,
+    cmd_news,
     cmd_plan,
     cmd_pptx,
+    cmd_save_news,
+    cmd_saved_ideas,
+    cmd_sources,
     cmd_start,
     cmd_stats,
     cmd_streak,
@@ -25,7 +29,7 @@ from bot.handlers import (
     handle_text,
 )
 from bot.models import init_db
-from bot.scheduler import notify_day_before, notify_day_of, notify_prime_time, weekly_digest
+from bot.scheduler import notify_day_before, notify_day_of, notify_prime_time, weekly_digest, news_digest
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -55,6 +59,10 @@ def main() -> None:
     app.add_handler(CommandHandler("sync", cmd_sync))
     app.add_handler(CommandHandler("import", cmd_import))
     app.add_handler(CommandHandler("pptx", cmd_pptx))
+    app.add_handler(CommandHandler("news", cmd_news))
+    app.add_handler(CommandHandler("save_news", cmd_save_news))
+    app.add_handler(CommandHandler("saved", cmd_saved_ideas))
+    app.add_handler(CommandHandler("sources", cmd_sources))
 
     # ── Catch-all text handler (saves ideas / handles "готово") ──────────
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
@@ -85,6 +93,13 @@ def main() -> None:
         notify_prime_time,
         time=time(hour=prime_reminder_hour, minute=0, tzinfo=TZ),
         name="prime_time",
+    )
+
+    # News digest — every day at 09:00 Moscow time
+    job_queue.run_daily(
+        news_digest,
+        time=time(hour=9, minute=0, tzinfo=TZ),
+        name="news_digest",
     )
 
     # Weekly digest — every Sunday at 10:00 Moscow time

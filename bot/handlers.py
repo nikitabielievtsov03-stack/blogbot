@@ -16,6 +16,7 @@ from bot.sheets import (
     update_post_in_sheet,
 )
 from bot.pptx_generator import generate_pptx
+from bot.news import run_digest, save_news_idea, get_saved_ideas, RSS_SOURCES
 
 import pytz
 
@@ -34,8 +35,9 @@ BTN_IDEAS  = "💡 Идеи"
 BTN_STREAK = "🔥 Серия"
 BTN_SYNC   = "🔄 Синхронизировать"
 BTN_PPTX   = "🎨 Презентация"
+BTN_NEWS   = "🗞 Новости"
 
-BUTTON_TEXTS = {BTN_TODAY, BTN_WEEK, BTN_DONE, BTN_UNDO, BTN_STATS, BTN_IDEAS, BTN_STREAK, BTN_SYNC, BTN_PPTX}
+BUTTON_TEXTS = {BTN_TODAY, BTN_WEEK, BTN_DONE, BTN_UNDO, BTN_STATS, BTN_IDEAS, BTN_STREAK, BTN_SYNC, BTN_PPTX, BTN_NEWS}
 
 MONTHS_RU = {
     1: "янв", 2: "фев", 3: "мар", 4: "апр",
@@ -82,8 +84,8 @@ def _keyboard() -> ReplyKeyboardMarkup:
             [BTN_TODAY,  BTN_WEEK],
             [BTN_DONE,   BTN_UNDO],
             [BTN_STATS,  BTN_STREAK],
-            [BTN_IDEAS,  BTN_SYNC],
-            [BTN_PPTX],
+            [BTN_IDEAS,  BTN_NEWS],
+            [BTN_PPTX,   BTN_SYNC],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -360,6 +362,104 @@ def _undo_done() -> str:
     return f"↩️ *Отменено:*\n{topics}\n\nПосты снова в плане."
 
 
+# ── NEWS ──────────────────────────────────────────────────────────────────────
+
+async def cmd_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+    await update.message.reply_text("⏳ Собираю новости и анализирую через AI...")
+    try:
+        digest = run_digest()
+        if digest:
+            # Telegram limit 4096 chars — split if needed
+            for chunk in _split_message(digest):
+                await update.message.reply_text(chunk, parse_mode="Markdown",
+                                                disable_web_page_preview=True)
+        else:
+            await update.message.reply_text(
+                "📭 Новостей пока нет или все уже были отправлены.\n\nПроверю позже!",
+                reply_markup=_keyboard(),
+            )
+    except Exception as e:
+        logger.exception("News digest failed")
+        await update.message.reply_text(
+            f"❌ Ошибка при получении новостей:\n{e}\n\n"
+            "Убедись что `ANTHROPIC_API_KEY` задан в переменных окружения.",
+            reply_markup=_keyboard(),
+        )
+
+
+async def cmd_save_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+    args = update.message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        await update.message.reply_text(
+            "Использование: `/save_news 2` — сохранить новость №2 из последнего дайджеста.",
+            parse_mode="Markdown",
+        )
+        return
+    n = int(args[1])
+    item = save_news_idea(n)
+    if item:
+        await update.message.reply_text(
+            f"✅ *Идея сохранена:*\n\n"
+            f"*{item['title']}*\n"
+            f"💡 {item['idea']}",
+            parse_mode="Markdown",
+            reply_markup=_keyboard(),
+        )
+    else:
+        await update.message.reply_text(
+            f"❌ Новость №{n} не найдена. Сначала получи дайджест через 🗞 Новости.",
+            reply_markup=_keyboard(),
+        )
+
+
+async def cmd_saved_ideas(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+    ideas = get_saved_ideas()
+    if not ideas:
+        await update.message.reply_text(
+            "Сохранённых идей из новостей нет.\n\nПолучи дайджест 🗞 и сохраняй через /save\\_news N",
+            parse_mode="Markdown",
+            reply_markup=_keyboard(),
+        )
+        return
+    lines = ["💾 *Сохранённые идеи из новостей*\n"]
+    for i, (title, idea, virality, saved_at) in enumerate(ideas, 1):
+        lines.append(f"*{i}.* {_esc(title)}")
+        lines.append(f"   💡 {_esc(idea)}")
+        lines.append(f"   📊 {virality}/10  ·  {_fmt_date(saved_at.date())}\n")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=_keyboard())
+
+
+async def cmd_sources(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+    lines = ["📡 *Источники новостей*\n"]
+    for name, url in RSS_SOURCES:
+        lines.append(f"• *{name}*\n  `{url}`")
+    lines.append("\n_Хочешь добавить свой источник? Напиши /add\\_source URL_")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=_keyboard())
+
+
+def _split_message(text: str, limit: int = 4000) -> list[str]:
+    """Split long message into chunks ≤ limit chars."""
+    if len(text) <= limit:
+        return [text]
+    chunks, current = [], ""
+    for line in text.splitlines(keepends=True):
+        if len(current) + len(line) > limit:
+            chunks.append(current)
+            current = ""
+        current += line
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 # ── PPTX ──────────────────────────────────────────────────────────────────────
 
 # Храним chat_id тех, кто ждёт ввода сценария
@@ -574,6 +674,24 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(_build_ideas(), parse_mode="Markdown", reply_markup=_keyboard())
     elif text == BTN_STREAK:
         await update.message.reply_text(_build_streak(), parse_mode="Markdown", reply_markup=_keyboard())
+    elif text == BTN_NEWS:
+        await update.message.reply_text("⏳ Собираю новости и анализирую через AI...")
+        try:
+            digest = run_digest()
+            if digest:
+                for chunk in _split_message(digest):
+                    await update.message.reply_text(chunk, parse_mode="Markdown",
+                                                    disable_web_page_preview=True)
+                await update.message.reply_text("👆 Сохрани идею: `/save_news N`",
+                                                parse_mode="Markdown", reply_markup=_keyboard())
+            else:
+                await update.message.reply_text(
+                    "📭 Новостей пока нет или все уже отправлены.",
+                    reply_markup=_keyboard(),
+                )
+        except Exception as e:
+            logger.exception("News digest failed")
+            await update.message.reply_text(f"❌ Ошибка: {e}", reply_markup=_keyboard())
     elif text == BTN_PPTX:
         _pptx_waiting.add(update.effective_chat.id)
         await update.message.reply_text(
