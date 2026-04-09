@@ -60,13 +60,17 @@ def _open_worksheet():
     for attempt in range(3):
         try:
             client = _get_client()
+            logger.info("Opening spreadsheet id=%s", GOOGLE_SHEET_ID)
             spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
-            return spreadsheet.worksheet(GOOGLE_SHEET_WORKSHEET)
+            logger.info("Opening worksheet name=%r", GOOGLE_SHEET_WORKSHEET)
+            ws = spreadsheet.worksheet(GOOGLE_SHEET_WORKSHEET)
+            logger.info("Worksheet opened OK")
+            return ws
         except Exception as e:
             last_exc = e
-            logger.warning("Sheet open failed (attempt %d/3): %s", attempt + 1, e)
+            logger.warning("Sheet open failed (attempt %d/3): %s: %s", attempt + 1, type(e).__name__, e)
             if attempt < 2:
-                time.sleep(2 ** attempt)  # 1s, 2s
+                time.sleep(2 ** attempt)
     raise last_exc
 
 
