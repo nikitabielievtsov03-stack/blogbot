@@ -773,7 +773,9 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             )
         except Exception as e:
             logger.exception("Google Sheets sync failed")
-            await update.message.reply_text(f"❌ Ошибка синхронизации: {e}")
+            resp = getattr(e, "response", None)
+            detail = f"HTTP {resp.status_code}: {resp.text[:200]}" if resp else f"{type(e).__name__}: {e}"
+            await update.message.reply_text(f"❌ Ошибка синхронизации:\n{detail}")
     else:
         # Сохранить как идею в таблицу
         try:

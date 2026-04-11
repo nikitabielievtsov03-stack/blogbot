@@ -7,21 +7,13 @@ import os
 import time
 
 import gspread
-from google.oauth2.service_account import Credentials
-from google.auth.transport.requests import Request
 
 from bot.config import GOOGLE_CREDENTIALS_PATH, GOOGLE_SHEET_ID, GOOGLE_SHEET_WORKSHEET
 from bot.models import Post, get_session
 
 logger = logging.getLogger(__name__)
 
-# Read + write access
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-]
-
-# Expected column order in the sheet:
-# A: Дата  |  B: День недели  |  C: Формат  |  D: Тема  |  E: Чекбокс (TRUE/FALSE)
+# A: Дата | B: День | C: Формат IG | D: Тема IG | E: Статус | F: ТГ (разделитель) | G: Формат ТГ | H: Тема ТГ
 DATE_FORMATS = ["%d.%m.%Y", "%d.%m.%y", "%Y-%m-%d", "%d/%m/%Y"]
 
 
@@ -36,22 +28,20 @@ def _parse_date(raw: str) -> datetime | None:
 
 
 def _get_client() -> gspread.Client:
+    """Create gspread client using service_account_from_dict — handles token lifecycle automatically."""
     import base64
     credentials_b64 = os.getenv("GOOGLE_CREDENTIALS_B64")
     credentials_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
     if credentials_b64:
         info = json.loads(base64.b64decode(credentials_b64).decode())
-        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     elif credentials_json:
         info = json.loads(credentials_json)
-        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     else:
-        creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_PATH, scopes=SCOPES)
+        with open(GOOGLE_CREDENTIALS_PATH) as f:
+            info = json.load(f)
 
-    # Force token refresh to avoid intermittent 401/404 from stale tokens
-    creds.refresh(Request())
-    return gspread.Client(auth=creds)
+    return gspread.service_account_from_dict(info)
 
 
 def _open_worksheet():
