@@ -160,7 +160,10 @@ def _build_week() -> str:
             .order_by(Post.date)
             .all()
         )
-        rows = [(p.date, p.day_of_week, p.format, p.topic, p.status) for p in posts]
+        rows = [
+            (p.date, p.day_of_week, p.format, p.topic, p.status, p.tg_format, p.tg_topic)
+            for p in posts
+        ]
 
     if not rows:
         return (
@@ -168,7 +171,7 @@ def _build_week() -> str:
             "Нажми 🔄 Синхронизировать, чтобы загрузить план."
         )
 
-    published_count = sum(1 for _, _, _, _, s in rows if s == "published")
+    published_count = sum(1 for _, __, ___, ____, s, _____, ______ in rows if s == "published")
     total = len(rows)
     bar = _progress_bar(published_count, total)
 
@@ -177,7 +180,7 @@ def _build_week() -> str:
         f"{bar}  {published_count}/{total}",
         "",
     ]
-    for p_date, p_dow, p_fmt, p_topic, p_status in rows:
+    for p_date, p_dow, p_fmt, p_topic, p_status, p_tg_fmt, p_tg_topic in rows:
         if p_status == "published":
             icon = "✅"
         elif p_date == today:
@@ -187,7 +190,9 @@ def _build_week() -> str:
         else:
             icon = "○"
         today_mark = "  ← сегодня" if p_date == today else ""
-        lines.append(f"{icon} *{p_dow} {p_date.strftime('%d.%m')}* — {_esc(p_topic)}{today_mark}")
+        lines.append(f"{icon} *{p_dow} {p_date.strftime('%d.%m')}* — 📸 {_esc(p_topic)}{today_mark}")
+        if p_tg_topic:
+            lines.append(f"   ✈️ {_esc(p_tg_topic)}")
 
     return "\n".join(lines)
 
