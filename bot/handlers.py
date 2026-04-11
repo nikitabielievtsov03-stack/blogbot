@@ -35,16 +35,14 @@ BTN_STATS  = "📊 Статистика"
 BTN_IDEAS  = "💡 Идеи"
 BTN_STREAK = "🔥 Серия"
 BTN_SYNC   = "🔄 Синхронизировать"
-BTN_PPTX    = "🎨 Презентация"
-BTN_NEWS    = "🗞 Новости"
-BTN_TG      = "✈️ Telegram"
-BTN_TG_DONE = "✅ ТГ выложил"
-BTN_TG_UNDO = "↩️ ТГ отменить"
+BTN_PPTX = "🎨 Презентация"
+BTN_NEWS = "🗞 Новости"
+BTN_TG   = "✈️ Telegram"
 
 BUTTON_TEXTS = {
     BTN_TODAY, BTN_WEEK, BTN_DONE, BTN_UNDO,
     BTN_STATS, BTN_IDEAS, BTN_STREAK, BTN_SYNC,
-    BTN_PPTX, BTN_NEWS, BTN_TG, BTN_TG_DONE, BTN_TG_UNDO,
+    BTN_PPTX, BTN_NEWS, BTN_TG,
 }
 
 MONTHS_RU = {
@@ -89,12 +87,12 @@ def _esc(text: str) -> str:
 def _keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
-            [BTN_TODAY,    BTN_WEEK],
-            [BTN_DONE,     BTN_UNDO],
-            [BTN_TG,       BTN_TG_DONE],
-            [BTN_STATS,    BTN_STREAK],
-            [BTN_IDEAS,    BTN_NEWS],
-            [BTN_PPTX,     BTN_SYNC],
+            [BTN_TODAY,  BTN_WEEK],
+            [BTN_DONE,   BTN_UNDO],
+            [BTN_TG,     BTN_STATS],
+            [BTN_STREAK, BTN_IDEAS],
+            [BTN_NEWS,   BTN_SYNC],
+            [BTN_PPTX],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -388,7 +386,7 @@ def _build_tg_plan() -> str:
             .order_by(Post.date)
             .all()
         )
-        rows = [(p.date, p.day_of_week, p.tg_format, p.tg_topic, p.tg_status) for p in posts]
+        rows = [(p.date, p.tg_format, p.tg_topic, p.status) for p in posts]
 
     if not rows:
         return (
@@ -399,7 +397,7 @@ def _build_tg_plan() -> str:
 
     sections: list[str] = []
     current_date = None
-    for p_date, p_dow, p_fmt, p_topic, p_status in rows:
+    for p_date, p_fmt, p_topic, p_status in rows:
         if p_date != current_date:
             if sections:
                 sections.append("")
@@ -411,62 +409,9 @@ def _build_tg_plan() -> str:
         sections.append(f"{icon} {_esc(p_fmt or 'Пост')}")
         sections.append(f"  ↳ {_esc(p_topic)}")
 
+    sections.append("")
+    sections.append("_Отметить выложенным — кнопка ✅ Выложил_")
     return "\n".join(sections)
-
-
-def _do_tg_done() -> str:
-    today = _today()
-    with get_session() as session:
-        posts = session.query(Post).filter(
-            Post.date == today,
-            Post.tg_topic.isnot(None),
-            Post.tg_topic != "",
-            Post.tg_status != "published",
-        ).all()
-        if not posts:
-            return (
-                "Все сегодняшние ТГ-посты уже отмечены ✅\n\n"
-                "Чтобы снять — нажми ↩️ ТГ отменить."
-            )
-        topics_list = [p.topic for p in posts]
-        tg_topics = [p.tg_topic for p in posts]
-        for p in posts:
-            p.tg_status = "published"
-        session.commit()
-
-    for topic in topics_list:
-        try:
-            update_tg_post_in_sheet(today, topic, True)
-        except Exception as e:
-            logger.warning("TG sheet update failed: %s", e)
-
-    lines = "\n".join(f"  · {_esc(t)}" for t in tg_topics)
-    return f"✅ *ТГ выложено сегодня:*\n{lines}"
-
-
-def _undo_tg_done() -> str:
-    today = _today()
-    with get_session() as session:
-        posts = session.query(Post).filter(
-            Post.date == today,
-            Post.tg_status == "published",
-        ).all()
-        if not posts:
-            return "Нет отмеченных ТГ-постов на сегодня."
-        topics_list = [p.topic for p in posts]
-        tg_topics = [p.tg_topic for p in posts]
-        for p in posts:
-            p.tg_status = "planned"
-        session.commit()
-
-    for topic in topics_list:
-        try:
-            update_tg_post_in_sheet(today, topic, False)
-        except Exception as e:
-            logger.warning("TG sheet update failed: %s", e)
-
-    lines = "\n".join(f"  · {_esc(t)}" for t in tg_topics if t)
-    return f"↩️ *ТГ статус сброшен:*\n{lines}\n\nПосты снова в плане."
 
 
 # ── NEWS ──────────────────────────────────────────────────────────────────────
@@ -783,10 +728,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(_build_streak(), parse_mode="Markdown", reply_markup=_keyboard())
     elif text == BTN_TG:
         await update.message.reply_text(_build_tg_plan(), parse_mode="Markdown", reply_markup=_keyboard())
-    elif text == BTN_TG_DONE:
-        await update.message.reply_text(_do_tg_done(), parse_mode="Markdown", reply_markup=_keyboard())
-    elif text == BTN_TG_UNDO:
-        await update.message.reply_text(_undo_tg_done(), parse_mode="Markdown", reply_markup=_keyboard())
     elif text == BTN_NEWS:
         await update.message.reply_text("⏳ Собираю новости и анализирую через AI...")
         try:
