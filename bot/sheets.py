@@ -27,8 +27,11 @@ def _parse_date(raw: str) -> datetime | None:
     return None
 
 
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+
 def _get_client() -> gspread.Client:
-    """Create gspread client using service_account_from_dict — handles token lifecycle automatically."""
+    """Create gspread client — handles token lifecycle automatically."""
     import base64
     credentials_b64 = os.getenv("GOOGLE_CREDENTIALS_B64")
     credentials_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
@@ -41,7 +44,7 @@ def _get_client() -> gspread.Client:
         with open(GOOGLE_CREDENTIALS_PATH) as f:
             info = json.load(f)
 
-    return gspread.service_account_from_dict(info)
+    return gspread.service_account_from_dict(info, scopes=SCOPES)
 
 
 def _open_worksheet():
