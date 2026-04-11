@@ -14,6 +14,7 @@ from bot.sheets import (
     import_from_text,
     sync_from_google_sheets,
     update_post_in_sheet,
+    update_tg_post_in_sheet,
 )
 from bot.pptx_generator import generate_pptx
 from bot.news import run_digest, save_news_idea, get_saved_ideas, RSS_SOURCES
@@ -34,10 +35,17 @@ BTN_STATS  = "📊 Статистика"
 BTN_IDEAS  = "💡 Идеи"
 BTN_STREAK = "🔥 Серия"
 BTN_SYNC   = "🔄 Синхронизировать"
-BTN_PPTX   = "🎨 Презентация"
-BTN_NEWS   = "🗞 Новости"
+BTN_PPTX    = "🎨 Презентация"
+BTN_NEWS    = "🗞 Новости"
+BTN_TG      = "✈️ Telegram"
+BTN_TG_DONE = "✅ ТГ выложил"
+BTN_TG_UNDO = "↩️ ТГ отменить"
 
-BUTTON_TEXTS = {BTN_TODAY, BTN_WEEK, BTN_DONE, BTN_UNDO, BTN_STATS, BTN_IDEAS, BTN_STREAK, BTN_SYNC, BTN_PPTX, BTN_NEWS}
+BUTTON_TEXTS = {
+    BTN_TODAY, BTN_WEEK, BTN_DONE, BTN_UNDO,
+    BTN_STATS, BTN_IDEAS, BTN_STREAK, BTN_SYNC,
+    BTN_PPTX, BTN_NEWS, BTN_TG, BTN_TG_DONE, BTN_TG_UNDO,
+}
 
 MONTHS_RU = {
     1: "янв", 2: "фев", 3: "мар", 4: "апр",
@@ -81,11 +89,12 @@ def _esc(text: str) -> str:
 def _keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
-            [BTN_TODAY,  BTN_WEEK],
-            [BTN_DONE,   BTN_UNDO],
-            [BTN_STATS,  BTN_STREAK],
-            [BTN_IDEAS,  BTN_NEWS],
-            [BTN_PPTX,   BTN_SYNC],
+            [BTN_TODAY,    BTN_WEEK],
+            [BTN_DONE,     BTN_UNDO],
+            [BTN_TG,       BTN_TG_DONE],
+            [BTN_STATS,    BTN_STREAK],
+            [BTN_IDEAS,    BTN_NEWS],
+            [BTN_PPTX,     BTN_SYNC],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -360,6 +369,104 @@ def _undo_done() -> str:
 
     topics = "\n".join(f"  · {_esc(t)}" for t in topics_list)
     return f"↩️ *Отменено:*\n{topics}\n\nПосты снова в плане."
+
+
+# ── Telegram channel ──────────────────────────────────────────────────────────
+
+def _build_tg_plan() -> str:
+    today = _today()
+    tomorrow = today + timedelta(days=1)
+
+    with get_session() as session:
+        posts = (
+            session.query(Post)
+            .filter(
+                Post.date.in_([today, tomorrow]),
+                Post.tg_topic.isnot(None),
+                Post.tg_topic != "",
+            )
+            .order_by(Post.date)
+            .all()
+        )
+        rows = [(p.date, p.day_of_week, p.tg_format, p.tg_topic, p.tg_status) for p in posts]
+
+    if not rows:
+        return (
+            "На сегодня и завтра постов для ТГ нет.\n\n"
+            "Заполни столбцы «Формат ТГ» и «Тема ТГ» в таблице,\n"
+            "затем нажми 🔄 Синхронизировать."
+        )
+
+    sections: list[str] = []
+    current_date = None
+    for p_date, p_dow, p_fmt, p_topic, p_status in rows:
+        if p_date != current_date:
+            if sections:
+                sections.append("")
+            label = "СЕГОДНЯ" if p_date == today else "ЗАВТРА"
+            sections.append(f"✈️ *{label} · ТГ · {_fmt_date(p_date)}*")
+            sections.append("─────────────────")
+            current_date = p_date
+        icon = "✅" if p_status == "published" else "⏳"
+        sections.append(f"{icon} {_esc(p_fmt or 'Пост')}")
+        sections.append(f"  ↳ {_esc(p_topic)}")
+
+    return "\n".join(sections)
+
+
+def _do_tg_done() -> str:
+    today = _today()
+    with get_session() as session:
+        posts = session.query(Post).filter(
+            Post.date == today,
+            Post.tg_topic.isnot(None),
+            Post.tg_topic != "",
+            Post.tg_status != "published",
+        ).all()
+        if not posts:
+            return (
+                "Все сегодняшние ТГ-посты уже отмечены ✅\n\n"
+                "Чтобы снять — нажми ↩️ ТГ отменить."
+            )
+        topics_list = [p.topic for p in posts]
+        tg_topics = [p.tg_topic for p in posts]
+        for p in posts:
+            p.tg_status = "published"
+        session.commit()
+
+    for topic in topics_list:
+        try:
+            update_tg_post_in_sheet(today, topic, True)
+        except Exception as e:
+            logger.warning("TG sheet update failed: %s", e)
+
+    lines = "\n".join(f"  · {_esc(t)}" for t in tg_topics)
+    return f"✅ *ТГ выложено сегодня:*\n{lines}"
+
+
+def _undo_tg_done() -> str:
+    today = _today()
+    with get_session() as session:
+        posts = session.query(Post).filter(
+            Post.date == today,
+            Post.tg_status == "published",
+        ).all()
+        if not posts:
+            return "Нет отмеченных ТГ-постов на сегодня."
+        topics_list = [p.topic for p in posts]
+        tg_topics = [p.tg_topic for p in posts]
+        for p in posts:
+            p.tg_status = "planned"
+        session.commit()
+
+    for topic in topics_list:
+        try:
+            update_tg_post_in_sheet(today, topic, False)
+        except Exception as e:
+            logger.warning("TG sheet update failed: %s", e)
+
+    lines = "\n".join(f"  · {_esc(t)}" for t in tg_topics if t)
+    return f"↩️ *ТГ статус сброшен:*\n{lines}\n\nПосты снова в плане."
 
 
 # ── NEWS ──────────────────────────────────────────────────────────────────────
@@ -674,6 +781,12 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(_build_ideas(), parse_mode="Markdown", reply_markup=_keyboard())
     elif text == BTN_STREAK:
         await update.message.reply_text(_build_streak(), parse_mode="Markdown", reply_markup=_keyboard())
+    elif text == BTN_TG:
+        await update.message.reply_text(_build_tg_plan(), parse_mode="Markdown", reply_markup=_keyboard())
+    elif text == BTN_TG_DONE:
+        await update.message.reply_text(_do_tg_done(), parse_mode="Markdown", reply_markup=_keyboard())
+    elif text == BTN_TG_UNDO:
+        await update.message.reply_text(_undo_tg_done(), parse_mode="Markdown", reply_markup=_keyboard())
     elif text == BTN_NEWS:
         await update.message.reply_text("⏳ Собираю новости и анализирую через AI...")
         try:

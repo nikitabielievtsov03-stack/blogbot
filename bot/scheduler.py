@@ -104,6 +104,62 @@ async def notify_prime_time(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await ctx.bot.send_message(chat_id=USER_ID, text="\n".join(lines), parse_mode="Markdown")
 
 
+# ── TG day-before reminder (runs every day at 20:00) ────────────────────────
+
+async def notify_tg_day_before(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Remind about tomorrow's Telegram posts."""
+    tomorrow = _today() + timedelta(days=1)
+
+    with get_session() as session:
+        posts = (
+            session.query(Post)
+            .filter(
+                Post.date == tomorrow,
+                Post.tg_topic.isnot(None),
+                Post.tg_topic != "",
+                Post.tg_notified_day_before == False,
+            )
+            .all()
+        )
+        if not posts:
+            return
+        lines = ["✈️ *Завтра в ТГ по плану:*\n"]
+        for p in posts:
+            lines.append(f"• {p.tg_format or 'Пост'} — {p.tg_topic}")
+            p.tg_notified_day_before = True
+        session.commit()
+
+    await ctx.bot.send_message(chat_id=USER_ID, text="\n".join(lines), parse_mode="Markdown")
+
+
+# ── TG day-of reminder (runs every day at 10:00) ─────────────────────────────
+
+async def notify_tg_day_of(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Remind about today's Telegram posts."""
+    today = _today()
+
+    with get_session() as session:
+        posts = (
+            session.query(Post)
+            .filter(
+                Post.date == today,
+                Post.tg_topic.isnot(None),
+                Post.tg_topic != "",
+                Post.tg_notified_day_of == False,
+            )
+            .all()
+        )
+        if not posts:
+            return
+        lines = ["✈️ *Сегодня нужно выложить в ТГ:*\n"]
+        for p in posts:
+            lines.append(f"• {p.tg_format or 'Пост'} — {p.tg_topic}")
+            p.tg_notified_day_of = True
+        session.commit()
+
+    await ctx.bot.send_message(chat_id=USER_ID, text="\n".join(lines), parse_mode="Markdown")
+
+
 # ── Daily news digest (runs every day at 09:00) ─────────────────────────────
 
 async def news_digest(ctx: ContextTypes.DEFAULT_TYPE) -> None:

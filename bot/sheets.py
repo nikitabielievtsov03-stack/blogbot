@@ -100,6 +100,12 @@ def sync_from_google_sheets() -> int:
             raw_status = row[4].strip().upper() if len(row) > 4 else ""
             status = "published" if raw_status == "TRUE" else "planned"
 
+            # TG columns (F=5, G=6, H=7)
+            raw_tg_status = row[5].strip().upper() if len(row) > 5 else ""
+            tg_fmt   = row[6].strip() if len(row) > 6 else ""
+            tg_topic = row[7].strip() if len(row) > 7 else ""
+            tg_status = "published" if raw_tg_status == "TRUE" else "planned"
+
             parsed_date = _parse_date(raw_date)
             if parsed_date is None:
                 logger.warning("Skipping row with unparseable date: %s", raw_date)
@@ -111,9 +117,15 @@ def sync_from_google_sheets() -> int:
                 .first()
             )
             if existing:
-                # Sync status from sheet (sheet is source of truth for checkbox)
                 if existing.status != status:
                     existing.status = status
+                # Sync TG fields
+                if tg_fmt:
+                    existing.tg_format = tg_fmt
+                if tg_topic:
+                    existing.tg_topic = tg_topic
+                if existing.tg_status != tg_status and raw_tg_status in ("TRUE", "FALSE"):
+                    existing.tg_status = tg_status
                 continue
 
             post = Post(
@@ -122,6 +134,9 @@ def sync_from_google_sheets() -> int:
                 format=fmt.strip(),
                 topic=topic.strip(),
                 status=status,
+                tg_format=tg_fmt or None,
+                tg_topic=tg_topic or None,
+                tg_status=tg_status if tg_fmt or tg_topic else None,
             )
             session.add(post)
             added += 1
@@ -147,6 +162,21 @@ def update_post_in_sheet(post_date: date, topic: str, published: bool) -> None:
             return
 
     logger.warning("Row not found in sheet for date=%s topic=%s", post_date, topic)
+
+
+def update_tg_post_in_sheet(post_date: date, topic: str, published: bool) -> None:
+    """Update the TG checkbox in column F for the matching row."""
+    worksheet = _open_worksheet()
+    rows = worksheet.get_all_values()
+    for i, row in enumerate(rows[1:], start=2):
+        if len(row) < 4:
+            continue
+        parsed_date = _parse_date(row[0])
+        if parsed_date == post_date and row[3].strip() == topic.strip():
+            worksheet.update([[True if published else False]], f"F{i}")
+            logger.info("TG sheet updated: row %d → %s", i, published)
+            return
+    logger.warning("TG row not found in sheet for date=%s topic=%s", post_date, topic)
 
 
 def get_ideas_from_sheet() -> list:

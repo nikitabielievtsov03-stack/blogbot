@@ -29,7 +29,10 @@ from bot.handlers import (
     handle_text,
 )
 from bot.models import init_db
-from bot.scheduler import notify_day_before, notify_day_of, notify_prime_time, weekly_digest, news_digest
+from bot.scheduler import (
+    notify_day_before, notify_day_of, notify_prime_time, weekly_digest,
+    news_digest, notify_tg_day_before, notify_tg_day_of,
+)
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -93,6 +96,20 @@ def main() -> None:
         notify_prime_time,
         time=time(hour=prime_reminder_hour, minute=0, tzinfo=TZ),
         name="prime_time",
+    )
+
+    # TG day-before reminder — every day at 20:00 Moscow time
+    job_queue.run_daily(
+        notify_tg_day_before,
+        time=time(hour=20, minute=0, tzinfo=TZ),
+        name="tg_day_before",
+    )
+
+    # TG day-of reminder — every day at 10:00 Moscow time
+    job_queue.run_daily(
+        notify_tg_day_of,
+        time=time(hour=10, minute=0, tzinfo=TZ),
+        name="tg_day_of",
     )
 
     # News digest — every day at 09:00 Moscow time

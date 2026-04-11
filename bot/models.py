@@ -9,19 +9,26 @@ Base = declarative_base()
 
 
 class Post(Base):
-    """A single content-plan entry."""
+    """A single content-plan entry (Instagram + Telegram)."""
 
     __tablename__ = "posts"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     date = Column(Date, nullable=False)
     day_of_week = Column(String(20), nullable=False)
+    # Instagram
     format = Column(String(50), nullable=False)
     topic = Column(Text, nullable=False)
     status = Column(String(30), default="planned")
     notified_day_before = Column(Boolean, default=False)
     notified_day_of = Column(Boolean, default=False)
     notified_prime_time = Column(Boolean, default=False)
+    # Telegram
+    tg_format = Column(String(100), nullable=True)
+    tg_topic = Column(Text, nullable=True)
+    tg_status = Column(String(30), default="planned", nullable=True)
+    tg_notified_day_before = Column(Boolean, default=False)
+    tg_notified_day_of = Column(Boolean, default=False)
 
 
 class Idea(Base):
@@ -76,6 +83,24 @@ SessionLocal = sessionmaker(bind=engine)
 
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    # Миграция: добавить TG-колонки если их нет (SQLite не поддерживает IF NOT EXISTS)
+    _new_columns = [
+        ("tg_format",               "VARCHAR(100)"),
+        ("tg_topic",                "TEXT"),
+        ("tg_status",               "VARCHAR(30) DEFAULT 'planned'"),
+        ("tg_notified_day_before",  "BOOLEAN DEFAULT 0"),
+        ("tg_notified_day_of",      "BOOLEAN DEFAULT 0"),
+    ]
+    with engine.connect() as conn:
+        for col, col_type in _new_columns:
+            try:
+                conn.execute(__import__("sqlalchemy").text(
+                    f"ALTER TABLE posts ADD COLUMN {col} {col_type}"
+                ))
+                conn.commit()
+            except Exception:
+                pass  # Колонка уже существует
+
     with SessionLocal() as session:
         if session.query(Streak).first() is None:
             session.add(Streak(current_streak=0, max_streak=0))
