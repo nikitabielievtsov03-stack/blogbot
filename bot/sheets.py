@@ -31,21 +31,19 @@ def _parse_date(raw: str) -> datetime | None:
 
 
 def _get_client() -> gspread.Client:
-    """Create gspread client. No forced token refresh — google-auth handles it automatically."""
+    """Create gspread client using service account credentials."""
     import base64
     credentials_b64 = os.getenv("GOOGLE_CREDENTIALS_B64")
     credentials_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
     if credentials_b64:
         info = json.loads(base64.b64decode(credentials_b64).decode())
-        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+        return gspread.service_account_from_dict(info, scopes=SCOPES)
     elif credentials_json:
         info = json.loads(credentials_json)
-        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+        return gspread.service_account_from_dict(info, scopes=SCOPES)
     else:
-        creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_PATH, scopes=SCOPES)
-
-    return gspread.Client(auth=creds)
+        return gspread.service_account(filename=GOOGLE_CREDENTIALS_PATH, scopes=SCOPES)
 
 
 def _open_worksheet():
@@ -73,6 +71,7 @@ def sync_from_google_sheets() -> int:
 
     - New rows are inserted.
     - Existing rows have their status synced from the sheet checkbox.
+    - Posts removed from the sheet are deleted from the DB.
 
     Returns the number of new rows added.
     """
@@ -82,15 +81,40 @@ def sync_from_google_sheets() -> int:
     if not rows:
         return 0
 
-    # Skip header row
-    data_rows = rows[1:]
+    # Skip header row (only rows 2–33 are the content plan, rows 34+ are ideas)
+    data_rows = rows[1:33]
+
+    # Build set of (date, topic) that exist in the sheet
+    sheet_keys: set[tuple] = set()
+    sheet_dates: set = set()
+    parsed_rows = []
+
+    for row in data_rows:
+        if len(row) < 4:
+            continue
+        raw_date, day_of_week, fmt, topic = row[0], row[1], row[2], row[3]
+        parsed_date = _parse_date(raw_date)
+        if parsed_date is None or not topic.strip():
+            continue
+        sheet_keys.add((parsed_date, topic.strip()))
+        sheet_dates.add(parsed_date)
+        parsed_rows.append((row, parsed_date, day_of_week, fmt, topic.strip()))
 
     added = 0
     with get_session() as session:
-        for row in data_rows:
-            if len(row) < 4:
-                continue
-            raw_date, day_of_week, fmt, topic = row[0], row[1], row[2], row[3]
+        # Delete posts whose date is in the sheet but topic is no longer there
+        if sheet_dates:
+            stale = (
+                session.query(Post)
+                .filter(Post.date.in_(sheet_dates))
+                .all()
+            )
+            for p in stale:
+                if (p.date, p.topic) not in sheet_keys:
+                    logger.info("Removing stale post: date=%s topic=%s", p.date, p.topic)
+                    session.delete(p)
+
+        for row, parsed_date, day_of_week, fmt, topic in parsed_rows:
             raw_status = row[4].strip().upper() if len(row) > 4 else ""
             status = "published" if raw_status == "TRUE" else "planned"
 
@@ -100,25 +124,18 @@ def sync_from_google_sheets() -> int:
             tg_topic = row[7].strip() if len(row) > 7 else ""
             tg_status = "published" if raw_tg_status == "TRUE" else "planned"
 
-            parsed_date = _parse_date(raw_date)
-            if parsed_date is None:
-                logger.warning("Skipping row with unparseable date: %s", raw_date)
-                continue
-
             existing = (
                 session.query(Post)
-                .filter(Post.date == parsed_date, Post.topic == topic.strip())
+                .filter(Post.date == parsed_date, Post.topic == topic)
                 .first()
             )
             if existing:
-                if existing.status != status:
-                    existing.status = status
-                # Sync TG fields
-                if tg_fmt:
-                    existing.tg_format = tg_fmt
-                if tg_topic:
-                    existing.tg_topic = tg_topic
-                if existing.tg_status != tg_status and raw_tg_status in ("TRUE", "FALSE"):
+                existing.status = status
+                existing.format = fmt.strip()
+                existing.day_of_week = day_of_week.strip()
+                existing.tg_format = tg_fmt or existing.tg_format
+                existing.tg_topic = tg_topic or existing.tg_topic
+                if raw_tg_status in ("TRUE", "FALSE"):
                     existing.tg_status = tg_status
                 continue
 
@@ -126,7 +143,7 @@ def sync_from_google_sheets() -> int:
                 date=parsed_date,
                 day_of_week=day_of_week.strip(),
                 format=fmt.strip(),
-                topic=topic.strip(),
+                topic=topic,
                 status=status,
                 tg_format=tg_fmt or None,
                 tg_topic=tg_topic or None,
