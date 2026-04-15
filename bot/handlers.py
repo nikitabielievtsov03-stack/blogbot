@@ -629,6 +629,34 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(_build_stats(), parse_mode="Markdown", reply_markup=_keyboard())
 
 
+# ── /debug ────────────────────────────────────────────────────────────────────
+
+async def cmd_debug(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+    import os
+    sheet_id = GOOGLE_SHEET_ID
+    worksheet = os.getenv("GOOGLE_SHEET_WORKSHEET", "Sheet1").strip()
+    has_b64 = bool(os.getenv("GOOGLE_CREDENTIALS_B64"))
+    has_json = bool(os.getenv("GOOGLE_CREDENTIALS_JSON"))
+    masked_id = f"{sheet_id[:6]}...{sheet_id[-4:]}" if len(sheet_id) > 10 else sheet_id or "НЕ ЗАДАН"
+    lines = [
+        "🔧 *Диагностика конфигурации*\n",
+        f"Sheet ID: `{masked_id}`",
+        f"Worksheet: `{worksheet}`",
+        f"Credentials B64: {'✅' if has_b64 else '❌'}",
+        f"Credentials JSON: {'✅' if has_json else '❌'}",
+    ]
+    # Try to open the sheet and report result
+    try:
+        from bot.sheets import _open_worksheet
+        ws = _open_worksheet()
+        lines.append(f"\nПодключение: ✅ `{ws.title}`")
+    except Exception as e:
+        lines.append(f"\nПодключение: ❌ `{type(e).__name__}: {e}`")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=_keyboard())
+
+
 # ── /sync ─────────────────────────────────────────────────────────────────────
 
 async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

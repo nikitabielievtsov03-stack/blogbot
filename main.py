@@ -10,6 +10,7 @@ import pytz
 
 from bot.config import BOT_TOKEN, PRIME_TIME_HOUR, TIMEZONE
 from bot.handlers import (
+    cmd_debug,
     cmd_done,
     cmd_help,
     cmd_ideas,
@@ -65,6 +66,7 @@ def main() -> None:
     app.add_handler(CommandHandler("save_news", cmd_save_news))
     app.add_handler(CommandHandler("saved", cmd_saved_ideas))
     app.add_handler(CommandHandler("sources", cmd_sources))
+    app.add_handler(CommandHandler("debug", cmd_debug))
 
     # ── Catch-all text handler (saves ideas / handles "готово") ──────────
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

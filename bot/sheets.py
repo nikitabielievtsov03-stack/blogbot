@@ -7,7 +7,8 @@ import os
 import time
 
 import gspread
-from google.oauth2.service_account import Credentials
+from gspread.auth import DEFAULT_SCOPES
+from gspread.http_client import BackOffHTTPClient
 
 from bot.config import GOOGLE_CREDENTIALS_PATH, GOOGLE_SHEET_ID, GOOGLE_SHEET_WORKSHEET
 from bot.models import Post, get_session
@@ -16,8 +17,6 @@ logger = logging.getLogger(__name__)
 
 # A: Дата | B: День | C: Формат IG | D: Тема IG | E: Статус | F: ТГ (разделитель) | G: Формат ТГ | H: Тема ТГ
 DATE_FORMATS = ["%d.%m.%Y", "%d.%m.%y", "%Y-%m-%d", "%d/%m/%Y"]
-
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
 def _parse_date(raw: str) -> datetime | None:
@@ -31,19 +30,25 @@ def _parse_date(raw: str) -> datetime | None:
 
 
 def _get_client() -> gspread.Client:
-    """Create gspread client using service account credentials."""
+    """Create gspread client using service account credentials with full default scopes."""
     import base64
     credentials_b64 = os.getenv("GOOGLE_CREDENTIALS_B64")
     credentials_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
     if credentials_b64:
         info = json.loads(base64.b64decode(credentials_b64).decode())
-        return gspread.service_account_from_dict(info, scopes=SCOPES)
     elif credentials_json:
         info = json.loads(credentials_json)
-        return gspread.service_account_from_dict(info, scopes=SCOPES)
     else:
-        return gspread.service_account(filename=GOOGLE_CREDENTIALS_PATH, scopes=SCOPES)
+        info = None
+
+    if info is not None:
+        return gspread.service_account_from_dict(
+            info, scopes=DEFAULT_SCOPES, http_client=BackOffHTTPClient
+        )
+    return gspread.service_account(
+        filename=GOOGLE_CREDENTIALS_PATH, scopes=DEFAULT_SCOPES, http_client=BackOffHTTPClient
+    )
 
 
 def _open_worksheet():
