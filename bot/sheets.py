@@ -75,8 +75,9 @@ def sync_from_google_sheets() -> int:
     """Fetch rows from Google Sheets and upsert into the database.
 
     - New rows are inserted.
-    - Existing rows have their status synced from the sheet checkbox.
+    - Existing rows are fully updated from the sheet.
     - Posts removed from the sheet are deleted from the DB.
+    - Duplicate DB entries for the same date are cleaned up.
 
     Returns the number of new rows added.
     """
@@ -86,10 +87,11 @@ def sync_from_google_sheets() -> int:
     if not rows:
         return 0
 
-    # Skip header row (only rows 2–33 are the content plan, rows 34+ are ideas)
-    data_rows = rows[1:33]
+    # Process all data rows — skip header. Rows without a parseable date (e.g. ideas section)
+    # are ignored automatically.
+    data_rows = rows[1:]
 
-    # Build set of (date, topic) that exist in the sheet
+    # Build authoritative map: (date, topic) → full row data
     sheet_keys: set[tuple] = set()
     sheet_dates: set = set()
     parsed_rows = []
@@ -97,33 +99,48 @@ def sync_from_google_sheets() -> int:
     for row in data_rows:
         if len(row) < 4:
             continue
-        raw_date, day_of_week, fmt, topic = row[0], row[1], row[2], row[3]
+        raw_date = row[0]
+        topic = row[3].strip()
         parsed_date = _parse_date(raw_date)
-        if parsed_date is None or not topic.strip():
+        if parsed_date is None or not topic:
             continue
-        sheet_keys.add((parsed_date, topic.strip()))
+        key = (parsed_date, topic)
+        if key in sheet_keys:
+            continue  # skip duplicate sheet rows for the same date+topic
+        sheet_keys.add(key)
         sheet_dates.add(parsed_date)
-        parsed_rows.append((row, parsed_date, day_of_week, fmt, topic.strip()))
+        parsed_rows.append((row, parsed_date, topic))
 
     added = 0
     with get_session() as session:
-        # Delete posts whose date is in the sheet but topic is no longer there
+        # 1. Remove DB duplicates: keep only the lowest-id post for each (date, topic)
+        all_posts = session.query(Post).all()
+        seen: dict[tuple, int] = {}
+        for p in all_posts:
+            key = (p.date, p.topic)
+            if key in seen:
+                logger.info("Removing DB duplicate: id=%s date=%s topic=%s", p.id, p.date, p.topic)
+                session.delete(p)
+            else:
+                seen[key] = p.id
+
+        # 2. Delete posts whose date appears in sheet but topic is no longer there
         if sheet_dates:
-            stale = (
-                session.query(Post)
-                .filter(Post.date.in_(sheet_dates))
-                .all()
-            )
+            stale = session.query(Post).filter(Post.date.in_(sheet_dates)).all()
             for p in stale:
                 if (p.date, p.topic) not in sheet_keys:
                     logger.info("Removing stale post: date=%s topic=%s", p.date, p.topic)
                     session.delete(p)
 
-        for row, parsed_date, day_of_week, fmt, topic in parsed_rows:
+        session.flush()
+
+        # 3. Upsert rows from the sheet
+        for row, parsed_date, topic in parsed_rows:
+            day_of_week = row[1].strip()
+            fmt = row[2].strip()
             raw_status = row[4].strip().upper() if len(row) > 4 else ""
             status = "published" if raw_status == "TRUE" else "planned"
 
-            # TG columns (F=5, G=6, H=7)
             raw_tg_status = row[5].strip().upper() if len(row) > 5 else ""
             tg_fmt   = row[6].strip() if len(row) > 6 else ""
             tg_topic = row[7].strip() if len(row) > 7 else ""
@@ -136,25 +153,24 @@ def sync_from_google_sheets() -> int:
             )
             if existing:
                 existing.status = status
-                existing.format = fmt.strip()
-                existing.day_of_week = day_of_week.strip()
+                existing.format = fmt
+                existing.day_of_week = day_of_week
                 existing.tg_format = tg_fmt or existing.tg_format
                 existing.tg_topic = tg_topic or existing.tg_topic
                 if raw_tg_status in ("TRUE", "FALSE"):
                     existing.tg_status = tg_status
                 continue
 
-            post = Post(
+            session.add(Post(
                 date=parsed_date,
-                day_of_week=day_of_week.strip(),
-                format=fmt.strip(),
+                day_of_week=day_of_week,
+                format=fmt,
                 topic=topic,
                 status=status,
                 tg_format=tg_fmt or None,
                 tg_topic=tg_topic or None,
                 tg_status=tg_status if tg_fmt or tg_topic else None,
-            )
-            session.add(post)
+            ))
             added += 1
 
         session.commit()
