@@ -72,14 +72,13 @@ def _open_worksheet():
 
 
 def sync_from_google_sheets() -> int:
-    """Fetch rows from Google Sheets and upsert into the database.
+    """Fetch rows from Google Sheets and fully replace DB entries by date.
 
-    - New rows are inserted.
-    - Existing rows are fully updated from the sheet.
-    - Posts removed from the sheet are deleted from the DB.
-    - Duplicate DB entries for the same date are cleaned up.
+    For every date that appears in the sheet: delete all existing DB posts
+    for that date, then insert fresh from the sheet. Status is taken from
+    the sheet checkbox — no data is lost since the sheet is the source of truth.
 
-    Returns the number of new rows added.
+    Returns the number of rows inserted.
     """
     worksheet = _open_worksheet()
 
@@ -87,95 +86,56 @@ def sync_from_google_sheets() -> int:
     if not rows:
         return 0
 
-    # Process all data rows — skip header. Rows without a parseable date (e.g. ideas section)
-    # are ignored automatically.
-    data_rows = rows[1:]
+    # Parse all data rows; skip header and rows without a valid date (e.g. ideas section)
+    # Group by date so we can do a full replace per date.
+    from collections import defaultdict
+    date_rows: dict = defaultdict(list)
 
-    # Build authoritative map: (date, topic) → full row data
-    sheet_keys: set[tuple] = set()
-    sheet_dates: set = set()
-    parsed_rows = []
-
-    for row in data_rows:
+    for row in rows[1:]:
         if len(row) < 4:
             continue
-        raw_date = row[0]
+        parsed_date = _parse_date(row[0])
         topic = row[3].strip()
-        parsed_date = _parse_date(raw_date)
         if parsed_date is None or not topic:
             continue
-        key = (parsed_date, topic)
-        if key in sheet_keys:
-            continue  # skip duplicate sheet rows for the same date+topic
-        sheet_keys.add(key)
-        sheet_dates.add(parsed_date)
-        parsed_rows.append((row, parsed_date, topic))
+        date_rows[parsed_date].append(row)
 
-    added = 0
+    if not date_rows:
+        return 0
+
+    inserted = 0
     with get_session() as session:
-        # 1. Remove DB duplicates: keep only the lowest-id post for each (date, topic)
-        all_posts = session.query(Post).all()
-        seen: dict[tuple, int] = {}
-        for p in all_posts:
-            key = (p.date, p.topic)
-            if key in seen:
-                logger.info("Removing DB duplicate: id=%s date=%s topic=%s", p.id, p.date, p.topic)
-                session.delete(p)
-            else:
-                seen[key] = p.id
+        for parsed_date, sheet_rows in date_rows.items():
+            # Delete ALL existing posts for this date — full replace
+            session.query(Post).filter(Post.date == parsed_date).delete()
 
-        # 2. Delete posts whose date appears in sheet but topic is no longer there
-        if sheet_dates:
-            stale = session.query(Post).filter(Post.date.in_(sheet_dates)).all()
-            for p in stale:
-                if (p.date, p.topic) not in sheet_keys:
-                    logger.info("Removing stale post: date=%s topic=%s", p.date, p.topic)
-                    session.delete(p)
+            for row in sheet_rows:
+                day_of_week = row[1].strip()
+                fmt         = row[2].strip()
+                topic       = row[3].strip()
+                raw_status  = row[4].strip().upper() if len(row) > 4 else ""
+                status      = "published" if raw_status == "TRUE" else "planned"
 
-        session.flush()
+                raw_tg_status = row[5].strip().upper() if len(row) > 5 else ""
+                tg_fmt        = row[6].strip() if len(row) > 6 else ""
+                tg_topic      = row[7].strip() if len(row) > 7 else ""
+                tg_status     = "published" if raw_tg_status == "TRUE" else "planned"
 
-        # 3. Upsert rows from the sheet
-        for row, parsed_date, topic in parsed_rows:
-            day_of_week = row[1].strip()
-            fmt = row[2].strip()
-            raw_status = row[4].strip().upper() if len(row) > 4 else ""
-            status = "published" if raw_status == "TRUE" else "planned"
-
-            raw_tg_status = row[5].strip().upper() if len(row) > 5 else ""
-            tg_fmt   = row[6].strip() if len(row) > 6 else ""
-            tg_topic = row[7].strip() if len(row) > 7 else ""
-            tg_status = "published" if raw_tg_status == "TRUE" else "planned"
-
-            existing = (
-                session.query(Post)
-                .filter(Post.date == parsed_date, Post.topic == topic)
-                .first()
-            )
-            if existing:
-                existing.status = status
-                existing.format = fmt
-                existing.day_of_week = day_of_week
-                existing.tg_format = tg_fmt or existing.tg_format
-                existing.tg_topic = tg_topic or existing.tg_topic
-                if raw_tg_status in ("TRUE", "FALSE"):
-                    existing.tg_status = tg_status
-                continue
-
-            session.add(Post(
-                date=parsed_date,
-                day_of_week=day_of_week,
-                format=fmt,
-                topic=topic,
-                status=status,
-                tg_format=tg_fmt or None,
-                tg_topic=tg_topic or None,
-                tg_status=tg_status if tg_fmt or tg_topic else None,
-            ))
-            added += 1
+                session.add(Post(
+                    date=parsed_date,
+                    day_of_week=day_of_week,
+                    format=fmt,
+                    topic=topic,
+                    status=status,
+                    tg_format=tg_fmt or None,
+                    tg_topic=tg_topic or None,
+                    tg_status=tg_status if tg_fmt or tg_topic else None,
+                ))
+                inserted += 1
 
         session.commit()
 
-    return added
+    return inserted
 
 
 def update_post_in_sheet(post_date: date, topic: str, published: bool) -> None:
