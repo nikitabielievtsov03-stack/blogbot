@@ -51,18 +51,16 @@ def _get_client() -> gspread.Client:
     )
 
 
-def _open_worksheet():
-    """Open worksheet with up to 3 retries on failure."""
+def _open_spreadsheet():
+    """Open the spreadsheet with up to 3 retries on failure."""
     last_exc = None
     for attempt in range(3):
         try:
             client = _get_client()
             logger.info("Opening spreadsheet id=%s", GOOGLE_SHEET_ID)
             spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
-            logger.info("Opening worksheet name=%r", GOOGLE_SHEET_WORKSHEET)
-            ws = spreadsheet.worksheet(GOOGLE_SHEET_WORKSHEET)
-            logger.info("Worksheet opened OK")
-            return ws
+            logger.info("Spreadsheet opened OK")
+            return spreadsheet
         except Exception as e:
             last_exc = e
             logger.warning("Sheet open failed (attempt %d/3): %s: %s", attempt + 1, type(e).__name__, e)
@@ -71,34 +69,53 @@ def _open_worksheet():
     raise last_exc
 
 
-def sync_from_google_sheets() -> int:
-    """Fetch rows from Google Sheets and fully replace DB entries by date.
+def _open_worksheet():
+    """Open single worksheet (used by idea helpers and sheet update functions)."""
+    spreadsheet = _open_spreadsheet()
+    ws = spreadsheet.worksheet(GOOGLE_SHEET_WORKSHEET)
+    logger.info("Worksheet opened: %r", ws.title)
+    return ws
 
-    For every date that appears in the sheet: delete all existing DB posts
-    for that date, then insert fresh from the sheet. Status is taken from
-    the sheet checkbox — no data is lost since the sheet is the source of truth.
 
-    Returns the number of rows inserted.
-    """
-    worksheet = _open_worksheet()
-
-    rows = worksheet.get_all_values()
-    if not rows:
-        return 0
-
-    # Parse all data rows; skip header and rows without a valid date (e.g. ideas section)
-    # Group by date so we can do a full replace per date.
-    from collections import defaultdict
-    date_rows: dict = defaultdict(list)
-
-    for row in rows[1:]:
+def _collect_rows_from_worksheet(ws) -> list:
+    """Return all data rows with a parseable date from a worksheet."""
+    all_values = ws.get_all_values()
+    result = []
+    for row in all_values[1:]:  # skip header
         if len(row) < 4:
             continue
         parsed_date = _parse_date(row[0])
         topic = row[3].strip()
         if parsed_date is None or not topic:
             continue
-        date_rows[parsed_date].append(row)
+        result.append((parsed_date, row))
+    return result
+
+
+def sync_from_google_sheets() -> int:
+    """Fetch rows from ALL worksheets and fully replace DB entries by date.
+
+    For every date that appears in any sheet: delete all existing DB posts
+    for that date, then insert fresh from the sheet. Reads every worksheet
+    automatically — adding a new month sheet requires no code changes.
+
+    Returns the number of rows inserted.
+    """
+    from collections import defaultdict
+
+    spreadsheet = _open_spreadsheet()
+    worksheets = spreadsheet.worksheets()
+    logger.info("Found %d worksheets: %s", len(worksheets), [ws.title for ws in worksheets])
+
+    date_rows: dict = defaultdict(list)
+
+    for ws in worksheets:
+        try:
+            for parsed_date, row in _collect_rows_from_worksheet(ws):
+                date_rows[parsed_date].append(row)
+            logger.info("Collected rows from worksheet %r", ws.title)
+        except Exception as e:
+            logger.warning("Failed to read worksheet %r: %s", ws.title, e)
 
     if not date_rows:
         return 0
@@ -106,16 +123,15 @@ def sync_from_google_sheets() -> int:
     inserted = 0
     with get_session() as session:
         for parsed_date, sheet_rows in date_rows.items():
-            # Delete ALL existing posts for this date — full replace
+            # Full replace for each date
             session.query(Post).filter(Post.date == parsed_date).delete()
 
             for row in sheet_rows:
-                day_of_week = row[1].strip()
-                fmt         = row[2].strip()
-                topic       = row[3].strip()
-                raw_status  = row[4].strip().upper() if len(row) > 4 else ""
-                status      = "published" if raw_status == "TRUE" else "planned"
-
+                day_of_week   = row[1].strip()
+                fmt           = row[2].strip()
+                topic         = row[3].strip()
+                raw_status    = row[4].strip().upper() if len(row) > 4 else ""
+                status        = "published" if raw_status == "TRUE" else "planned"
                 raw_tg_status = row[5].strip().upper() if len(row) > 5 else ""
                 tg_fmt        = row[6].strip() if len(row) > 6 else ""
                 tg_topic      = row[7].strip() if len(row) > 7 else ""
